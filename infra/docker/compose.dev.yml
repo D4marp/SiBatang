@@ -1,0 +1,54 @@
+# Lingkungan pengembangan lokal. BUKAN konfigurasi produksi (lihat 13_DEPLOYMENT_RUNBOOK.md).
+# Salin infra/.env.example ke infra/.env dan isi nilai acak lokal.
+name: sibatang-dev
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in infra/.env}
+      POSTGRES_DB: sibatang
+      SIB_MIGRATOR_PASSWORD: ${SIB_MIGRATOR_PASSWORD:?set in infra/.env}
+      SIB_APP_PASSWORD: ${SIB_APP_PASSWORD:?set in infra/.env}
+    volumes:
+      - dbdata:/var/lib/postgresql
+      - ./postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    ports: ["127.0.0.1:5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sibatang"]
+      interval: 3s
+      retries: 20
+
+  migrate:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    entrypoint: ["/app/sibctl", "migrate"]
+    environment:
+      MIGRATOR_DATABASE_URL: postgres://sib_migrator:${SIB_MIGRATOR_PASSWORD}@db:5432/sibatang?sslmode=disable
+    depends_on: {db: {condition: service_healthy}}
+
+  api:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    environment: &apienv
+      APP_ENV: development
+      DATABASE_URL: postgres://sib_app:${SIB_APP_PASSWORD}@db:5432/sibatang?sslmode=disable
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?base64 of 32 random bytes}
+      DEFAULT_PUBLIC_TENANT_CODE: SIBATANG_BATANG
+      ROOT_ORG_CODE: POLDA_JAWA_TENGAH
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on: {migrate: {condition: service_completed_successfully}}
+
+  worker:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.api}
+    entrypoint: ["/app/worker"]
+    environment: *apienv
+    depends_on: {migrate: {condition: service_completed_successfully}}
+
+  web:
+    build: {context: ../.., dockerfile: infra/docker/Dockerfile.web}
+    environment:
+      API_ORIGIN: http://api:8080
+    ports: ["127.0.0.1:3000:3000"]
+    depends_on: [api]
+
+volumes:
+  dbdata:

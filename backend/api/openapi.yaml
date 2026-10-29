@@ -1,0 +1,656 @@
+openapi: 3.1.0
+info:
+  title: SIBATANG Jateng Queue API
+  version: 1.0.0
+  description: |
+    Kontrak tunggal (sumber kebenaran) untuk web Next.js, Flutter mobile, dan Flutter desktop.
+    Platform ini hanya untuk Polda Jawa Tengah; pilot produksi hanya tenant SIBATANG_BATANG (Polres Batang).
+    Semua respons sukses berbentuk `{data, meta?}`; semua error `application/problem+json` (RFC 9457).
+    Nama/NIK/HP tidak pernah ada pada tampilan publik, SSE publik, metrik Polda, outbox, atau log.
+servers:
+  - url: /api/v1
+tags:
+  - {name: public}
+  - {name: staff}
+  - {name: polda}
+  - {name: device}
+paths:
+  /public/tenants/{slug}/catalog:
+    get:
+      tags: [public]
+      operationId: getPublicCatalog
+      parameters: [{$ref: '#/components/parameters/Slug'}]
+      responses:
+        '200': {description: Site dan layanan PUBLISHED, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogEnvelope'}}}}
+        '404': {$ref: '#/components/responses/Problem'}
+  /public/tenants/{slug}/slots:
+    get:
+      tags: [public]
+      operationId: listPublicSlots
+      parameters:
+        - {$ref: '#/components/parameters/Slug'}
+        - {in: query, name: service_id, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: date, required: true, schema: {type: string, format: date}}
+      responses:
+        '200': {description: Slot terbuka, content: {application/json: {schema: {$ref: '#/components/schemas/SlotListEnvelope'}}}}
+        '400': {$ref: '#/components/responses/Problem'}
+  /public/bookings:
+    post:
+      tags: [public]
+      operationId: createPublicBooking
+      parameters:
+        - {in: header, name: Idempotency-Key, required: true, schema: {type: string, minLength: 8, maxLength: 128}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/BookingRequest'}}}
+      responses:
+        '201': {description: Booking CONFIRMED; qr_token hanya dikirim di respons privat ini, content: {application/json: {schema: {$ref: '#/components/schemas/BookingEnvelope'}}}}
+        '200': {description: Replay idempotent (header Idempotent-Replay true), content: {application/json: {schema: {$ref: '#/components/schemas/BookingEnvelope'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+  /public/bookings/{reference}:
+    get:
+      tags: [public]
+      operationId: getPublicBooking
+      security: [{bookingToken: []}]
+      parameters: [{$ref: '#/components/parameters/Reference'}]
+      responses:
+        '200': {description: Detail milik sendiri (tanpa nama/kontak), content: {application/json: {schema: {$ref: '#/components/schemas/BookingDetailEnvelope'}}}}
+        '404': {$ref: '#/components/responses/Problem'}
+  /public/bookings/{reference}/status:
+    get:
+      tags: [public]
+      operationId: getPublicBookingStatus
+      security: [{bookingToken: []}]
+      parameters: [{$ref: '#/components/parameters/Reference'}]
+      responses:
+        '200': {description: Alias dari getPublicBooking, content: {application/json: {schema: {$ref: '#/components/schemas/BookingDetailEnvelope'}}}}
+  /public/bookings/{reference}/cancel:
+    post:
+      tags: [public]
+      operationId: cancelPublicBooking
+      security: [{bookingToken: []}]
+      parameters: [{$ref: '#/components/parameters/Reference'}]
+      responses:
+        '204': {description: Dibatalkan (idempoten); slot dilepas tepat sekali}
+        '409': {$ref: '#/components/responses/Problem'}
+  /public/bookings/{reference}/events:
+    get:
+      tags: [public]
+      operationId: streamPublicBookingEvents
+      security: [{bookingToken: []}]
+      parameters: [{$ref: '#/components/parameters/Reference'}]
+      responses:
+        '200': {description: "SSE event `booking.status` (data = BookingDetail)", content: {text/event-stream: {schema: {type: string}}}}
+  /auth/session:
+    get:
+      tags: [staff]
+      operationId: getSession
+      security: [{staffSession: []}]
+      responses:
+        '200': {description: Sesi saat ini + csrf_token, content: {application/json: {schema: {$ref: '#/components/schemas/SessionEnvelope'}}}}
+  /auth/logout:
+    post:
+      tags: [staff]
+      operationId: logout
+      security: [{staffSession: [], csrf: []}]
+      responses: {'204': {description: Sesi dicabut}}
+  /auth/staff/login:
+    get:
+      tags: [staff]
+      operationId: startStaffLogin
+      responses: {'501': {$ref: '#/components/responses/Problem'}}
+  /staff/counters/{id}/queue:
+    get:
+      tags: [staff]
+      operationId: getCounterQueue
+      security: [{staffSession: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {description: Antrean loket tanpa nama warga, content: {application/json: {schema: {$ref: '#/components/schemas/CounterQueueEnvelope'}}}}
+  /staff/counters/{id}/ready:
+    post:
+      tags: [staff]
+      operationId: setCounterReady
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody:
+        content: {application/json: {schema: {type: object, properties: {readiness_revision: {type: integer}, mode: {type: string, enum: [AUTO_ADVANCE_ON_READY]}}, additionalProperties: false}}}
+      responses:
+        '200': {description: 'READY; bila AUTO_ADVANCE_ON_READY aktif dan loket bertugas, Go memanggil tiket', content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}
+        '409': {$ref: '#/components/responses/Problem'}
+  /staff/counters/{id}/pause:
+    post:
+      tags: [staff]
+      operationId: pauseCounter
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: PAUSED, content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}}
+  /staff/counters/{id}/close:
+    post:
+      tags: [staff]
+      operationId: closeCounter
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: CLOSED, content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}}
+  /staff/counters/{id}/call-next:
+    post:
+      tags: [staff]
+      operationId: callNext
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {description: Tiket CALLED + job announcement dibuat atomik, content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}
+        '204': {description: Tidak ada tiket eligible}
+        '409': {$ref: '#/components/responses/Problem'}
+  /staff/tickets/{id}/recall:
+    post:
+      tags: [staff]
+      operationId: recallTicket
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses:
+        '200': {description: Job RECALL baru, content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}
+        '429': {$ref: '#/components/responses/Problem'}
+  /staff/tickets/{id}/start:
+    post:
+      tags: [staff]
+      operationId: startTicket
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: SERVING, content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}}
+  /staff/tickets/{id}/complete:
+    post:
+      tags: [staff]
+      operationId: completeTicket
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: COMPLETED (+ auto-advance bila aktif), content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}}
+  /staff/tickets/{id}/no-show:
+    post:
+      tags: [staff]
+      operationId: markNoShow
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: NO_SHOW, content: {application/json: {schema: {$ref: '#/components/schemas/CallResultEnvelope'}}}}}
+  /staff/sites/{id}/devices:
+    post:
+      tags: [staff]
+      operationId: enrollDevice
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/EnrollRequest'}}}}
+      responses: {'201': {description: Kode aktivasi sekali pakai (15 menit), content: {application/json: {schema: {$ref: '#/components/schemas/EnrollEnvelope'}}}}}
+  /staff/devices/{id}/revoke:
+    post:
+      tags: [staff]
+      operationId: revokeDevice
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: Kredensial dicabut}}
+  /staff/sites/{id}/audio-zones:
+    post:
+      tags: [staff]
+      operationId: createAudioZone
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [label], properties: {label: {type: string}, name_policy: {$ref: '#/components/schemas/NamePolicy'}}, additionalProperties: false}}}}
+      responses: {'201': {description: Zona dibuat (default NUMBER_ONLY)}}
+  /staff/sites/{id}/audio-zones/{zoneId}:
+    patch:
+      tags: [staff]
+      operationId: updateAudioZonePolicy
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}, {in: path, name: zoneId, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name_policy], properties: {name_policy: {$ref: '#/components/schemas/NamePolicy'}}, additionalProperties: false}}}}
+      responses: {'204': {description: Kebijakan nama diubah (diaudit)}}
+  /staff/sites/{id}/counters:
+    post:
+      tags: [staff]
+      operationId: createCounter
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [label, audio_zone_id, service_ids], properties: {label: {type: string}, audio_zone_id: {type: string, format: uuid}, service_ids: {type: array, items: {type: string, format: uuid}}, auto_advance_on_ready: {type: boolean}}, additionalProperties: false}}}}
+      responses: {'201': {description: Loket dibuat}}
+  /staff/counters/{id}/queue-policy:
+    patch:
+      tags: [staff]
+      operationId: updateCounterPolicy
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {auto_announce_on_call: {type: boolean}, auto_advance_on_ready: {type: boolean}}, additionalProperties: false}}}}
+      responses: {'204': {description: Kebijakan diubah (diaudit)}}
+  /staff/counters/{id}/operator:
+    put:
+      tags: [staff]
+      operationId: assignCounterOperator
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [user_id], properties: {user_id: {type: string, format: uuid}}, additionalProperties: false}}}}
+      responses: {'204': {description: Operator ditugaskan}}
+  /staff/tenant-services/{id}/slots:
+    post:
+      tags: [staff]
+      operationId: createSlots
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [slots], properties: {slots: {type: array, maxItems: 200, items: {$ref: '#/components/schemas/SlotInput'}}}, additionalProperties: false}}}}
+      responses: {'201': {description: Slot dibuat}}
+  /staff/tenants/{id}/readiness:
+    get:
+      tags: [staff]
+      operationId: getTenantReadiness
+      security: [{staffSession: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'200': {description: Checklist kesiapan, content: {application/json: {schema: {$ref: '#/components/schemas/ReadinessEnvelope'}}}}}
+  /staff/tenants/{id}/publish:
+    post:
+      tags: [staff]
+      operationId: publishTenant
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: PUBLISHED}, '422': {$ref: '#/components/responses/Problem'}}
+  /polda/jateng/metrics:
+    get:
+      tags: [polda]
+      operationId: getJatengMetrics
+      security: [{staffSession: []}]
+      responses:
+        '200': {description: Agregat saja; memerlukan report.aggregate.read pada POLDA_JAWA_TENGAH, content: {application/json: {schema: {$ref: '#/components/schemas/PoldaMetricsEnvelope'}}}}
+        '403': {$ref: '#/components/responses/Problem'}
+  /polda/jateng/polres:
+    get:
+      tags: [polda]
+      operationId: listJatengPolres
+      security: [{staffSession: []}]
+      responses: {'200': {description: Polres di bawah Polda Jateng, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/PolresListItem'}}}}}}}}
+  /polda/jateng/onboarding-requests:
+    get:
+      tags: [polda]
+      operationId: listOnboardingRequests
+      security: [{staffSession: []}]
+      responses: {'200': {description: Daftar permohonan, content: {application/json: {schema: {type: object, properties: {data: {type: array, items: {$ref: '#/components/schemas/OnboardingRequest'}}}}}}}}
+    post:
+      tags: [polda]
+      operationId: createOnboardingRequest
+      security: [{staffSession: [], csrf: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OnboardingInput'}}}}
+      responses: {'201': {description: Draft permohonan; parent selalu root Jateng}}
+  /polda/jateng/onboarding-requests/{id}/approve:
+    post:
+      tags: [polda]
+      operationId: approveOnboardingRequest
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: Org Polres + tenant DRAFT dibuat; pemohon tidak boleh menyetujui sendiri}}
+  /polda/jateng/onboarding-requests/{id}/reject:
+    post:
+      tags: [polda]
+      operationId: rejectOnboardingRequest
+      security: [{staffSession: [], csrf: []}]
+      parameters: [{$ref: '#/components/parameters/Id'}]
+      responses: {'204': {description: Ditolak}}
+  /devices/activate:
+    post:
+      tags: [device]
+      operationId: activateDevice
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [activation_code], properties: {activation_code: {type: string}}, additionalProperties: false}}}}
+      responses: {'200': {description: Kredensial perangkat (ditampilkan sekali), content: {application/json: {schema: {$ref: '#/components/schemas/ActivationEnvelope'}}}}, '401': {$ref: '#/components/responses/Problem'}}
+  /devices/{deviceId}/heartbeat:
+    post:
+      tags: [device]
+      operationId: deviceHeartbeat
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {app_version: {type: string}, health: {type: object, additionalProperties: true}}, additionalProperties: false}}}}
+      responses: {'204': {description: OK}}
+  /devices/{deviceId}/checkins:
+    post:
+      tags: [device]
+      operationId: deviceCheckin
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [qr_token], properties: {qr_token: {type: string}, device_request_id: {type: string}}, additionalProperties: false}}}}
+      responses:
+        '201': {description: Tiket baru diterbitkan (sekali), content: {application/json: {schema: {$ref: '#/components/schemas/CheckinEnvelope'}}}}
+        '200': {description: QR sama = tiket yang sama (is_reprint true), content: {application/json: {schema: {$ref: '#/components/schemas/CheckinEnvelope'}}}}
+        '410': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+  /devices/{deviceId}/tickets/{ticketId}/print-attempts:
+    post:
+      tags: [device]
+      operationId: recordPrintAttempt
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}, {in: path, name: ticketId, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [outcome], properties: {outcome: {type: string, enum: [SUCCESS, FAILED]}}, additionalProperties: false}}}}
+      responses: {'200': {description: Payload cetak untuk nomor yang sama (tanpa PII)}}
+  /devices/{deviceId}/display/snapshot:
+    get:
+      tags: [device]
+      operationId: getDisplaySnapshot
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}]
+      responses: {'200': {description: Snapshot tersanitasi, content: {application/json: {schema: {$ref: '#/components/schemas/DisplaySnapshotEnvelope'}}}}}
+  /devices/{deviceId}/display/events:
+    get:
+      tags: [device]
+      operationId: streamDisplayEvents
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}]
+      responses: {'200': {description: "SSE: queue.ticket_called | queue.ticket_recalled | queue.ticket_serving | queue.ticket_completed | queue.ticket_no_show. Resume dengan Last-Event-ID lalu ambil snapshot.", content: {text/event-stream: {schema: {type: string}}}}}
+  /devices/{deviceId}/announcer/events:
+    get:
+      tags: [device]
+      operationId: streamAnnouncerEvents
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}]
+      responses: {'200': {description: "SSE announcement.job_available {zone_id, job_id} saja; tanpa nama/nomor.", content: {text/event-stream: {schema: {type: string}}}}}
+  /devices/{deviceId}/announcer/jobs/claim:
+    post:
+      tags: [device]
+      operationId: claimAnnouncement
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}]
+      responses:
+        '200': {description: Klaim privat (satu job aktif per zona; public_call_name hanya bila kebijakan + consent), content: {application/json: {schema: {$ref: '#/components/schemas/ClaimEnvelope'}}}}
+        '204': {description: Tidak ada job / zona sedang memutar}
+        '409': {$ref: '#/components/responses/Problem'}
+  /devices/{deviceId}/announcer/jobs/{jobId}/started:
+    post:
+      tags: [device]
+      operationId: ackAnnouncementStarted
+      summary: Ack started (idempoten; dijaga fencing token + kepemilikan lease)
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}, {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [fencing_token], properties: {fencing_token: {type: integer, format: int64}, error_code: {type: string, maxLength: 40}}, additionalProperties: false}}}}
+      responses: {'204': {description: Ack diterima}, '409': {$ref: '#/components/responses/Problem'}}
+  /devices/{deviceId}/announcer/jobs/{jobId}/completed:
+    post:
+      tags: [device]
+      operationId: ackAnnouncementCompleted
+      summary: Ack completed (idempoten; dijaga fencing token + kepemilikan lease)
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}, {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [fencing_token], properties: {fencing_token: {type: integer, format: int64}, error_code: {type: string, maxLength: 40}}, additionalProperties: false}}}}
+      responses: {'204': {description: Ack diterima}, '409': {$ref: '#/components/responses/Problem'}}
+  /devices/{deviceId}/announcer/jobs/{jobId}/failed:
+    post:
+      tags: [device]
+      operationId: ackAnnouncementFailed
+      summary: Ack failed (idempoten; dijaga fencing token + kepemilikan lease)
+      security: [{deviceCredential: []}]
+      parameters: [{$ref: '#/components/parameters/DeviceId'}, {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [fencing_token], properties: {fencing_token: {type: integer, format: int64}, error_code: {type: string, maxLength: 40}}, additionalProperties: false}}}}
+      responses: {'204': {description: Ack diterima}, '409': {$ref: '#/components/responses/Problem'}}
+components:
+  securitySchemes:
+    staffSession: {type: apiKey, in: cookie, name: sib_session, description: Cookie HttpOnly SameSite=Strict dari sesi Go}
+    csrf: {type: apiKey, in: header, name: X-CSRF-Token, description: Wajib untuk mutasi berbasis cookie; nilai dari GET /auth/session}
+    deviceCredential: {type: apiKey, in: header, name: Authorization, description: 'Format `Device <device_id>.<secret>`'}
+    bookingToken: {type: apiKey, in: header, name: X-Booking-Token, description: Token QR opaque milik warga; reference saja bukan otorisasi}
+  parameters:
+    Slug: {in: path, name: slug, required: true, schema: {type: string, enum: [sibatang-batang]}}
+    Id: {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+    DeviceId: {in: path, name: deviceId, required: true, schema: {type: string, format: uuid}}
+    Reference: {in: path, name: reference, required: true, schema: {type: string}}
+  responses:
+    Problem:
+      description: Error (RFC 9457)
+      content: {application/problem+json: {schema: {$ref: '#/components/schemas/Problem'}}}
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, code, detail, request_id]
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        code:
+          type: string
+          enum: [VALIDATION_ERROR, AUTH_REQUIRED, SCOPE_DENIED, NOT_FOUND, SLOT_FULL, STATE_CONFLICT, IDEMPOTENCY_KEY_REUSED, ZONE_LEASED_BY_OTHER, STALE_FENCING_TOKEN, BOOKING_EXPIRED, SERVICE_POLICY_NOT_MET, RATE_LIMITED, NOT_CONFIGURED, TEMPORARILY_UNAVAILABLE, INTERNAL_ERROR]
+        detail: {type: string}
+        request_id: {type: string}
+    NamePolicy: {type: string, enum: [NUMBER_ONLY, PREFERRED_NAME_IF_CONSENT, FULL_NAME_IF_APPROVED], default: NUMBER_ONLY}
+    TicketStatus: {type: string, enum: [WAITING, CALLED, SERVING, COMPLETED, NO_SHOW, CANCELLED]}
+    CounterState: {type: string, enum: [CLOSED, READY, CALLING, SERVING, PAUSED]}
+    Catalog:
+      type: object
+      required: [tenant_code, brand_name, site_timezone, sites]
+      properties:
+        tenant_code: {type: string}
+        brand_name: {type: string}
+        site_timezone: {type: string}
+        sites:
+          type: array
+          items:
+            type: object
+            required: [id, code, name, services]
+            properties:
+              id: {type: string, format: uuid}
+              code: {type: string}
+              name: {type: string}
+              address: {type: [string, 'null']}
+              services:
+                type: array
+                items: {type: object, required: [service_id, code, display_name], properties: {service_id: {type: string, format: uuid}, code: {type: string}, display_name: {type: string}}}
+    CatalogEnvelope: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Catalog'}}}
+    Slot:
+      type: object
+      required: [slot_id, starts_at, ends_at, capacity, remaining]
+      properties: {slot_id: {type: string, format: uuid}, starts_at: {type: string, format: date-time}, ends_at: {type: string, format: date-time}, capacity: {type: integer}, remaining: {type: integer}}
+    SlotListEnvelope: {type: object, required: [data], properties: {data: {type: array, items: {$ref: '#/components/schemas/Slot'}}}}
+    BookingRequest:
+      type: object
+      required: [tenant_code, slot_id, service_id, applicant, privacy_notice_version]
+      additionalProperties: false
+      properties:
+        tenant_code: {type: string, const: SIBATANG_BATANG}
+        slot_id: {type: string, format: uuid}
+        service_id: {type: string, format: uuid}
+        applicant:
+          type: object
+          required: [display_name, contact]
+          additionalProperties: false
+          properties:
+            display_name: {type: string, minLength: 2, maxLength: 80}
+            contact: {type: string, minLength: 3, maxLength: 100}
+            allow_voice_name: {type: boolean, default: false}
+        privacy_notice_version: {type: string, maxLength: 32}
+    Booking:
+      type: object
+      required: [booking_id, reference, status, service, site, service_date, starts_at, qr_expires_at]
+      properties:
+        booking_id: {type: string, format: uuid}
+        reference: {type: string}
+        status: {type: string, enum: [CONFIRMED, CHECKED_IN, CANCELLED, EXPIRED]}
+        service: {type: string}
+        site: {type: string}
+        service_date: {type: string, format: date}
+        starts_at: {type: string, format: date-time}
+        qr_token: {type: string, description: Hanya ada pada respons pembuatan}
+        qr_expires_at: {type: string, format: date-time}
+    BookingEnvelope: {type: object, required: [data], properties: {data: {$ref: '#/components/schemas/Booking'}}}
+    BookingDetailEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          allOf:
+            - {$ref: '#/components/schemas/Booking'}
+            - type: object
+              required: [ticket]
+              properties:
+                ticket:
+                  type: [object, 'null']
+                  properties:
+                    ticket_id: {type: string, format: uuid}
+                    display_number: {type: string}
+                    status: {$ref: '#/components/schemas/TicketStatus'}
+                    counter_label: {type: [string, 'null']}
+                    waiting_ahead_estimate: {type: [integer, 'null'], description: 'Perkiraan, bukan janji'}
+                    revision: {type: integer}
+    SessionEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [user_id, csrf_token, memberships]
+          properties:
+            user_id: {type: string, format: uuid}
+            csrf_token: {type: string}
+            memberships: {type: array, items: {type: object, properties: {role: {type: string}, scope_type: {type: string}, scope_id: {type: string}}}}
+    QueueEntry: {type: object, properties: {ticket_id: {type: string, format: uuid}, display_number: {type: string}, service: {type: string}, status: {$ref: '#/components/schemas/TicketStatus'}, checked_in_at: {type: string, format: date-time}}}
+    CounterQueueEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            counter_id: {type: string, format: uuid}
+            label: {type: string}
+            state: {$ref: '#/components/schemas/CounterState'}
+            readiness_revision: {type: integer}
+            current: {oneOf: [{$ref: '#/components/schemas/QueueEntry'}, {type: 'null'}]}
+            waiting: {type: array, items: {$ref: '#/components/schemas/QueueEntry'}}
+    CallResultEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          required: [counter_id, counter_state, readiness_revision]
+          properties:
+            counter_id: {type: string, format: uuid}
+            counter_state: {$ref: '#/components/schemas/CounterState'}
+            ticket_id: {type: string, format: uuid}
+            display_number: {type: string}
+            status: {$ref: '#/components/schemas/TicketStatus'}
+            call_event_id: {type: integer, format: int64}
+            announcement_status: {type: string, enum: [QUEUED, DISABLED]}
+            readiness_revision: {type: integer}
+    EnrollRequest:
+      type: object
+      required: [device_type, label]
+      additionalProperties: false
+      properties:
+        device_type: {type: string, enum: [KIOSK, OPERATOR, DISPLAY, ANNOUNCER]}
+        label: {type: string}
+        audio_zone_id: {type: string, format: uuid}
+        counter_id: {type: string, format: uuid}
+    EnrollEnvelope: {type: object, properties: {data: {type: object, properties: {device_id: {type: string, format: uuid}, activation_code: {type: string}, expires_at: {type: string, format: date-time}}}}}
+    ActivationEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            device_id: {type: string, format: uuid}
+            credential: {type: string, description: 'Simpan di secure storage OS; kirim sebagai `Authorization: Device <credential>`'}
+            device_type: {type: string}
+            site_id: {type: string, format: uuid}
+            audio_zone_id: {type: string}
+            counter_id: {type: string}
+    SlotInput: {type: object, required: [starts_at, ends_at, capacity], properties: {starts_at: {type: string, format: date-time}, ends_at: {type: string, format: date-time}, capacity: {type: integer, minimum: 0, maximum: 500}}}
+    CheckinEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties: {ticket_id: {type: string, format: uuid}, display_number: {type: string}, status: {$ref: '#/components/schemas/TicketStatus'}, site: {type: string}, print_job_id: {type: string}, is_reprint: {type: boolean}}
+    DisplaySnapshotEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            site_code: {type: string}
+            now_serving: {type: array, items: {type: object, properties: {ticket_number: {type: string}, counter_label: {type: string}, service: {type: string}, status: {type: string}, called_at: {type: string, format: date-time}}}}
+            waiting_by_service: {type: object, additionalProperties: {type: integer}}
+            last_event_id: {type: integer, format: int64}
+            as_of: {type: string, format: date-time}
+    ClaimEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          required: [job_id, call_event_id, tenant_id, site_id, zone_id, fencing_token, expires_at, locale, speech]
+          properties:
+            job_id: {type: string, format: uuid}
+            call_event_id: {type: integer, format: int64}
+            tenant_id: {type: string, format: uuid}
+            site_id: {type: string, format: uuid}
+            zone_id: {type: string, format: uuid}
+            fencing_token: {type: integer, format: int64}
+            expires_at: {type: string, format: date-time}
+            locale: {type: string, example: id-ID}
+            speech:
+              type: object
+              required: [service_spoken, number_spoken, public_call_name, counter_spoken, template_id]
+              properties:
+                service_spoken: {type: string, example: S K C K}
+                number_spoken: {type: string, example: nol dua lima}
+                public_call_name: {type: [string, 'null'], description: null bila NUMBER_ONLY atau tanpa consent}
+                counter_spoken: {type: string, example: loket dua}
+                template_id: {type: string, example: id-ID-v1}
+    ReadinessEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            tenant_code: {type: string}
+            status: {type: string}
+            ready: {type: boolean}
+            checks: {type: array, items: {type: object, properties: {name: {type: string}, ok: {type: boolean}}}}
+    PolresMetrics:
+      type: object
+      required: [tenant_code, brand_name, org_code, status, booking_count, arrived_count, waiting_count, called_count, served_count, no_show_count, cancelled_count, average_wait_seconds, p95_wait_seconds, devices_total, devices_online, announcers_online, announcement_failures_24h, data_available, data_as_of, is_fresh]
+      properties:
+        tenant_code: {type: string}
+        brand_name: {type: string}
+        org_code: {type: string}
+        status: {type: string}
+        booking_count: {type: integer}
+        arrived_count: {type: integer}
+        waiting_count: {type: integer}
+        called_count: {type: integer}
+        served_count: {type: integer}
+        no_show_count: {type: integer}
+        cancelled_count: {type: integer}
+        average_wait_seconds: {type: [number, 'null']}
+        p95_wait_seconds: {type: [number, 'null']}
+        devices_total: {type: [integer, 'null']}
+        devices_online: {type: [integer, 'null']}
+        announcers_online: {type: [integer, 'null']}
+        announcement_failures_24h: {type: [integer, 'null']}
+        data_available: {type: boolean, description: false = belum ada data (BUKAN nol)}
+        data_as_of: {type: [string, 'null'], format: date-time}
+        is_fresh: {type: boolean}
+    PoldaMetricsEnvelope:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: object
+          required: [polda_code, as_of, service_date, active_polres_count, polres]
+          properties:
+            polda_code: {type: string, const: POLDA_JAWA_TENGAH}
+            as_of: {type: string, format: date-time}
+            service_date: {type: string, format: date}
+            active_polres_count: {type: integer}
+            polres: {type: array, items: {$ref: '#/components/schemas/PolresMetrics'}}
+        meta: {type: object, properties: {report_scope: {type: string, const: JATENG_DESCENDANTS}}}
+    PolresListItem: {type: object, required: [org_code, org_name, tenant_code, brand_name, tenant_status], properties: {org_code: {type: string}, org_name: {type: string}, tenant_code: {type: string}, brand_name: {type: string}, tenant_status: {type: string}}}
+    OnboardingInput:
+      type: object
+      required: [org_code, org_name, tenant_code, brand_name, booking_prefix]
+      additionalProperties: false
+      description: parent_id sengaja tidak ada; parent selalu POLDA_JAWA_TENGAH.
+      properties:
+        org_code: {type: string, pattern: '^POLRES_[A-Z0-9_]{2,40}$'}
+        org_name: {type: string}
+        tenant_code: {type: string, pattern: '^[A-Z0-9_]{3,60}$'}
+        brand_name: {type: string}
+        booking_prefix: {type: string, pattern: '^[A-Z]{2,5}$'}
+    OnboardingRequest:
+      type: object
+      properties: {id: {type: string, format: uuid}, org_code: {type: string}, org_name: {type: string}, tenant_code: {type: string}, brand_name: {type: string}, booking_prefix: {type: string}, status: {type: string, enum: [PENDING, APPROVED, REJECTED]}, created_at: {type: string, format: date-time}}

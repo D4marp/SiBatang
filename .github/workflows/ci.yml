@@ -1,0 +1,52 @@
+name: ci
+on:
+  push: {branches: [main]}
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env: {POSTGRES_PASSWORD: test}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
+    defaults: {run: {working-directory: backend}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version-file: backend/go.mod, cache-dependency-path: backend/go.sum}
+      - run: go vet ./...
+      - run: go test ./... -race -count=1
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
+      - name: OpenAPI lint
+        run: npx --yes @redocly/cli@1.34.5 lint api/openapi.yaml --config api/redocly.yaml
+
+  web:
+    runs-on: ubuntu-latest
+    defaults: {run: {working-directory: web}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: {version: 10}
+      - uses: actions/setup-node@v4
+        with: {node-version: 24, cache: pnpm, cache-dependency-path: web/pnpm-lock.yaml}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm gen:api && git diff --exit-code src/generated   # klien TS harus sesuai kontrak
+      - run: pnpm lint && pnpm typecheck && pnpm test
+      - run: pnpm build
+
+  flutter:
+    runs-on: ubuntu-latest
+    strategy: {matrix: {app: [mobile, desktop]}}
+    defaults: {run: {working-directory: "${{ matrix.app }}"}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable}
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test

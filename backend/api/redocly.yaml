@@ -1,0 +1,8 @@
+extends: [recommended]
+rules:
+  operation-summary: off          # operationId sudah stabil; ringkasan opsional
+  operation-4xx-response: off     # SSE/stream dan 204 tidak selalu punya 4xx terdokumentasi
+  security-defined: off           # endpoint publik sengaja tanpa security
+  no-empty-servers: off
+  info-license: off
+  no-unused-components: warn

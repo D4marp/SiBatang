@@ -1,0 +1,23 @@
+name: sibatang_desktop
+description: SIBATANG desktop Windows - mode kiosk, operator, display, dan announcer suara Indonesia.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^3.0.0
+  http: ^1.5.0
+  flutter_secure_storage: ^9.2.4
+  flutter_tts: ^4.2.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
