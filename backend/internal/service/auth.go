@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -10,6 +12,7 @@ import (
 
 	"github.com/D4marp/SiBatang/backend/internal/crypto"
 	"github.com/D4marp/SiBatang/backend/internal/domain"
+	"github.com/D4marp/SiBatang/backend/internal/oidc"
 )
 
 type StaffPrincipal struct {
@@ -191,4 +194,86 @@ func locateTicket(id string) locator {
 
 func locateTenantService(id string) locator {
 	return locateRow(`SELECT site_id::text FROM tenant_services WHERE id=$1`, id, func(r *domain.Resource) []any { return []any{&r.SiteID} })
+}
+
+// --- OIDC login ---
+
+const loginStateAAD = "oidc-login"
+
+type LoginState struct{ State, Nonce, Verifier string }
+
+// SealLoginState membungkus state/nonce/verifier PKCE dalam nilai terenkripsi+terautentikasi (disimpan di cookie pendek).
+func (s *Service) SealLoginState(ls LoginState) string {
+	raw := strings.Join([]string{ls.State, ls.Nonce, ls.Verifier, strconv.FormatInt(s.now().Add(10*time.Minute).Unix(), 10)}, "|")
+	return base64.RawURLEncoding.EncodeToString(s.box.Seal([]byte(raw), []byte(loginStateAAD)))
+}
+
+func (s *Service) OpenLoginState(v string) (LoginState, error) {
+	b, err := base64.RawURLEncoding.DecodeString(v)
+	if err != nil {
+		return LoginState{}, domain.ErrUnauthenticated
+	}
+	plain, err := s.box.Open(b, []byte(loginStateAAD))
+	if err != nil {
+		return LoginState{}, domain.ErrUnauthenticated
+	}
+	f := strings.Split(string(plain), "|")
+	exp, e := strconv.ParseInt(f[len(f)-1], 10, 64)
+	if len(f) != 4 || e != nil || s.now().Unix() > exp {
+		return LoginState{}, domain.ErrUnauthenticated
+	}
+	return LoginState{State: f[0], Nonce: f[1], Verifier: f[2]}, nil
+}
+
+var privilegedRoles = map[domain.Role]bool{
+	domain.RolePlatformAdmin: true, domain.RolePoldaOrgAdmin: true, domain.RolePoldaMonitor: true,
+	domain.RolePoldaSupervisor: true, domain.RolePolresAdmin: true, domain.RoleSiteManager: true,
+}
+
+// LoginWithOIDC membuat sesi BARU (rotasi) untuk pengguna yang sudah didaftarkan admin. Tidak ada auto-provision.
+// requireMFA: peran privilese wajib membawa amr "mfa" dari IdP.
+func (s *Service) LoginWithOIDC(ctx context.Context, claims *oidc.Claims, requireMFA bool) (token, csrf, landing string, err error) {
+	var userID string
+	var privileged, polda bool
+	err = s.db.WithPlain(ctx, func(tx pgx.Tx) error {
+		if e := tx.QueryRow(ctx, `SELECT id::text FROM users WHERE oidc_subject=$1 AND status='ACTIVE'`, claims.Subject).Scan(&userID); e != nil {
+			return e
+		}
+		rows, e := tx.Query(ctx, `SELECT r.code, m.scope_type FROM memberships m JOIN roles r ON r.id=m.role_id
+			WHERE m.user_id=$1 AND m.revoked_at IS NULL AND m.starts_at<=now() AND (m.expires_at IS NULL OR m.expires_at>now())`, userID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var role, scope string
+			if e := rows.Scan(&role, &scope); e != nil {
+				return e
+			}
+			privileged = privileged || privilegedRoles[domain.Role(role)]
+			polda = polda || scope == string(domain.ScopePoldaJateng)
+		}
+		return rows.Err()
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", "", domain.ErrForbidden // subject belum didaftarkan oleh admin
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+	if requireMFA && privileged && !claims.HasAMR("mfa") {
+		return "", "", "", &domain.Error{Status: 403, Code: "MFA_REQUIRED", Detail: "multi-factor authentication is required for this account"}
+	}
+	token, csrf, err = s.CreateSession(ctx, userID, 8*time.Hour)
+	if err != nil {
+		return "", "", "", err
+	}
+	_ = s.db.WithPlain(ctx, func(tx pgx.Tx) error {
+		return s.audit(ctx, tx, auditEntry{ActorID: userID, Action: "auth.login", ResourceType: "session"})
+	})
+	landing = "/"
+	if polda {
+		landing = "/polda/jateng/overview"
+	}
+	return token, csrf, landing, nil
 }

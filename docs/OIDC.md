@@ -1,12 +1,20 @@
-# OIDC staf — yang masih harus dikerjakan
+# Login staf OIDC
 
-Backend sudah menyediakan sesi server-side (`sessions`, cookie HttpOnly `sib_session`, `csrf_token`, pencabutan) dan
-`Service.CreateSession(userID, ttl)`. Yang belum ada adalah alur ke IdP resmi (OPEN-08):
+Diimplementasikan di `backend/internal/oidc` (klien, stdlib saja) dan `GET /api/v1/auth/staff/{login,callback}`.
 
-1. `GET /api/v1/auth/staff/login`: buat `state`, `nonce`, PKCE verifier; simpan sementara (cookie bertanda tangan atau tabel); redirect ke IdP.
-2. `GET /api/v1/auth/staff/callback`: validasi `state`, tukar `code`, validasi `iss`/`aud`/`exp`/`nonce`, pastikan klaim MFA (`amr`) untuk
-   `POLDA_*` dan `POLRES_ADMIN`; petakan `sub` → `users.oidc_subject` (pengguna dibuat oleh admin via `sibctl user-add`, bukan auto-provision);
-   panggil `CreateSession`, set cookie `HttpOnly; Secure; SameSite=Strict`, rotasi sesi saat login.
-3. Native operator (Flutter desktop): Authorization Code + PKCE via browser sistem; simpan token di secure storage.
+## Alur
+1. `login`: buat `state`, `nonce`, verifier PKCE (S256); simpan terenkripsi AES-GCM di cookie `sib_oidc` (HttpOnly, 10 menit); redirect ke IdP.
+2. `callback`: cocokkan `state` (constant-time), tukar `code` + verifier, verifikasi `id_token` (RS256/ES256 via JWKS; `iss`, `aud`, `exp`, `nbf`, `nonce`; alg `none`/HS* ditolak).
+3. Subject harus sudah ada di `users.oidc_subject` berstatus ACTIVE (dibuat admin via `sibctl user-add`). **Tidak ada auto-provision.**
+4. Peran privilese (PLATFORM_ADMIN, POLDA_*, POLRES_ADMIN, SITE_MANAGER) wajib klaim `amr` berisi `mfa` (`OIDC_REQUIRE_MFA`, default true).
+5. Sesi baru dibuat (rotasi tiap login), cookie `sib_session` HttpOnly, SameSite=Lax (Lax agar terkirim setelah redirect dari IdP), `Secure` di luar development; login diaudit.
+6. Kegagalan mengarah ke `/masuk?error=state|idp|mfa|not_registered|server` tanpa detail.
 
-Jangan menambahkan login password lokal. Alat `sibctl dev-session` hanya untuk non-produksi dan menolak `APP_ENV=production`.
+## Konfigurasi
+`OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` (opsional untuk public client), `OIDC_REDIRECT_URL` (= redirect URI terdaftar di IdP),
+`OIDC_REQUIRE_MFA`. URL wajib https (http hanya localhost saat `APP_ENV=development`). Kosong = login 501.
+
+## Belum
+- Operator desktop (Flutter) masih perlu alur native (Authorization Code + PKCE via browser sistem, token di secure storage).
+- Logout terfederasi (RP-initiated logout) dan refresh/idle timeout sesi; sesi berumur tetap 8 jam.
+- Pengujian terhadap IdP institusi nyata (diuji hanya dengan IdP palsu RS256).

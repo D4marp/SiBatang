@@ -35,7 +35,7 @@ type harness struct {
 	svc   *service.Service
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, opts ...func(*config.Config)) *harness {
 	base := os.Getenv("TEST_DATABASE_URL")
 	if base == "" {
 		t.Skip("TEST_DATABASE_URL not set")
@@ -66,6 +66,9 @@ func newHarness(t *testing.T) *harness {
 	cfg := config.Config{DefaultPublicTenant: "SIBATANG_BATANG", RootOrgCode: "POLDA_JAWA_TENGAH", SessionCookieName: "sib_session",
 		PilotPublishAllowlist: []string{"SIBATANG_BATANG"}, DataEncryptionKey: key, PublicRateLimitPerMin: 1000,
 		AnnouncementLease: 30 * time.Second, SSEHeartbeat: 20 * time.Second}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc, _ := service.New(cfg, d, log)
 	ts := httptest.NewServer(New(svc, d, cfg, log).Handler())

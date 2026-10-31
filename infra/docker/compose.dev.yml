@@ -34,6 +34,11 @@ services:
       DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:?base64 of 32 random bytes}
       DEFAULT_PUBLIC_TENANT_CODE: SIBATANG_BATANG
       ROOT_ORG_CODE: POLDA_JAWA_TENGAH
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URL: ${OIDC_REDIRECT_URL:-}
+      OIDC_REQUIRE_MFA: ${OIDC_REQUIRE_MFA:-true}
     ports: ["127.0.0.1:8080:8080"]
     depends_on: {migrate: {condition: service_completed_successfully}}
 

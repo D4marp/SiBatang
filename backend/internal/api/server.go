@@ -15,6 +15,7 @@ import (
 	"github.com/D4marp/SiBatang/backend/internal/db"
 	"github.com/D4marp/SiBatang/backend/internal/domain"
 	"github.com/D4marp/SiBatang/backend/internal/httpx"
+	"github.com/D4marp/SiBatang/backend/internal/oidc"
 	"github.com/D4marp/SiBatang/backend/internal/service"
 )
 
@@ -24,10 +25,15 @@ type Server struct {
 	cfg     config.Config
 	log     *slog.Logger
 	limiter *httpx.Limiter
+	oidc    *oidc.Client // nil = belum dikonfigurasi (login 501)
 }
 
 func New(svc *service.Service, d *db.DB, cfg config.Config, log *slog.Logger) *Server {
-	return &Server{svc: svc, db: d, cfg: cfg, log: log, limiter: httpx.NewLimiter(cfg.PublicRateLimitPerMin)}
+	srv := &Server{svc: svc, db: d, cfg: cfg, log: log, limiter: httpx.NewLimiter(cfg.PublicRateLimitPerMin)}
+	if cfg.OIDCIssuer != "" {
+		srv.oidc = oidc.New(oidc.Config{Issuer: cfg.OIDCIssuer, ClientID: cfg.OIDCClientID, ClientSecret: cfg.OIDCClientSecret, RedirectURL: cfg.OIDCRedirectURL})
+	}
+	return srv
 }
 
 type (

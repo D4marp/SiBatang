@@ -2,14 +2,19 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/D4marp/SiBatang/backend/internal/crypto"
 	"github.com/D4marp/SiBatang/backend/internal/domain"
 	"github.com/D4marp/SiBatang/backend/internal/httpx"
+	"github.com/D4marp/SiBatang/backend/internal/reqctx"
 	"github.com/D4marp/SiBatang/backend/internal/service"
 )
 
@@ -105,9 +110,71 @@ func (s *Server) publicRoutes(h func(string, http.HandlerFunc)) {
 }
 
 func (s *Server) authRoutes(h func(string, http.HandlerFunc)) {
-	// Login staf memakai OIDC IdP resmi (MFA di IdP). Alur code+PKCE belum dikonfigurasi di repo ini.
+	// Login staf: OIDC Authorization Code + PKCE. State/nonce/verifier di cookie terenkripsi berumur 10 menit.
+	const stateCookie = "sib_oidc"
 	h("GET /auth/staff/login", func(w http.ResponseWriter, r *http.Request) {
-		s.fail(w, r, domain.ErrNotConfigured("OIDC identity provider is not configured (see docs/OIDC.md)"))
+		if s.oidc == nil {
+			s.fail(w, r, domain.ErrNotConfigured("OIDC identity provider is not configured (see docs/OIDC.md)"))
+			return
+		}
+		ls := service.LoginState{State: crypto.RandomToken(), Nonce: crypto.RandomToken(), Verifier: crypto.RandomToken()}
+		u, err := s.oidc.AuthURL(r.Context(), ls.State, ls.Nonce, ls.Verifier)
+		if err != nil {
+			s.log.Error("oidc discovery", slog.String("error", err.Error()))
+			s.fail(w, r, domain.ErrUnavailable)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: s.svc.SealLoginState(ls), Path: "/api/v1/auth/staff", MaxAge: 600,
+			HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode})
+		http.Redirect(w, r, u, http.StatusFound)
+	})
+	h("GET /auth/staff/callback", func(w http.ResponseWriter, r *http.Request) {
+		deny := func(code string) {
+			http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/api/v1/auth/staff", MaxAge: -1, HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode})
+			http.Redirect(w, r, "/masuk?error="+code, http.StatusFound)
+		}
+		if s.oidc == nil {
+			deny("not_configured")
+			return
+		}
+		c, err := r.Cookie(stateCookie)
+		if err != nil {
+			deny("state")
+			return
+		}
+		ls, err := s.svc.OpenLoginState(c.Value)
+		q := r.URL.Query()
+		if err != nil || q.Get("state") == "" || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(ls.State)) != 1 {
+			deny("state")
+			return
+		}
+		if q.Get("error") != "" || q.Get("code") == "" {
+			deny("idp")
+			return
+		}
+		claims, err := s.oidc.Exchange(r.Context(), q.Get("code"), ls.Verifier, ls.Nonce)
+		if err != nil {
+			s.log.Warn("oidc exchange failed", slog.String("request_id", reqctx.ID(r.Context())), slog.String("error", err.Error()))
+			deny("idp")
+			return
+		}
+		tok, _, landing, err := s.svc.LoginWithOIDC(r.Context(), claims, s.cfg.OIDCRequireMFA)
+		if err != nil {
+			var de *domain.Error
+			if errors.As(err, &de) && de.Code == "MFA_REQUIRED" {
+				deny("mfa")
+			} else if errors.As(err, &de) && de.Status == 403 {
+				deny("not_registered")
+			} else {
+				s.log.Error("oidc login", slog.String("error", err.Error()))
+				deny("server")
+			}
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: stateCookie, Value: "", Path: "/api/v1/auth/staff", MaxAge: -1, HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode})
+		// Lax (bukan Strict): sesi harus terkirim pada navigasi pertama setelah redirect dari IdP.
+		http.SetCookie(w, &http.Cookie{Name: s.cfg.SessionCookieName, Value: tok, Path: "/", MaxAge: 8 * 3600, HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode})
+		http.Redirect(w, r, landing, http.StatusFound)
 	})
 	h("GET /auth/session", s.staff(func(w http.ResponseWriter, r *http.Request, p *service.StaffPrincipal) error {
 		type m struct {
@@ -128,7 +195,7 @@ func (s *Server) authRoutes(h func(string, http.HandlerFunc)) {
 				return err
 			}
 		}
-		http.SetCookie(w, &http.Cookie{Name: s.cfg.SessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{Name: s.cfg.SessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.cfg.CookieSecure, SameSite: http.SameSiteLaxMode})
 		w.WriteHeader(http.StatusNoContent)
 		return nil
 	}))

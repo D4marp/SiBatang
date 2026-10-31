@@ -11,20 +11,22 @@ import (
 )
 
 type Config struct {
-	AppEnv                 string
-	HTTPAddr               string
-	DatabaseURL            string
-	RootOrgCode            string
-	DefaultPublicTenant    string
-	PilotPublishAllowlist  []string
-	DataEncryptionKey      []byte
-	SSEHeartbeat           time.Duration
-	AnnouncementLease      time.Duration
-	AnnouncementExpire     time.Duration
-	SessionCookieName      string
-	CookieSecure           bool
-	PublicRateLimitPerMin  int
-	MetricsRefreshInterval time.Duration
+	AppEnv                                                      string
+	HTTPAddr                                                    string
+	DatabaseURL                                                 string
+	RootOrgCode                                                 string
+	DefaultPublicTenant                                         string
+	PilotPublishAllowlist                                       []string
+	DataEncryptionKey                                           []byte
+	SSEHeartbeat                                                time.Duration
+	AnnouncementLease                                           time.Duration
+	AnnouncementExpire                                          time.Duration
+	SessionCookieName                                           string
+	CookieSecure                                                bool
+	PublicRateLimitPerMin                                       int
+	MetricsRefreshInterval                                      time.Duration
+	OIDCIssuer, OIDCClientID, OIDCClientSecret, OIDCRedirectURL string
+	OIDCRequireMFA                                              bool
 }
 
 func Load() (Config, error) {
@@ -42,6 +44,9 @@ func Load() (Config, error) {
 		MetricsRefreshInterval: time.Duration(atoi("METRICS_REFRESH_SECONDS", 30)) * time.Second,
 	}
 	c.CookieSecure = c.AppEnv != "development"
+	c.OIDCIssuer, c.OIDCClientID = os.Getenv("OIDC_ISSUER_URL"), os.Getenv("OIDC_CLIENT_ID")
+	c.OIDCClientSecret, c.OIDCRedirectURL = os.Getenv("OIDC_CLIENT_SECRET"), os.Getenv("OIDC_REDIRECT_URL")
+	c.OIDCRequireMFA = os.Getenv("OIDC_REQUIRE_MFA") != "false" // MFA wajib untuk peran privilese; mati hanya eksplisit (staging IdP tanpa MFA)
 	c.PilotPublishAllowlist = strings.Split(getenv("PILOT_PUBLISH_ALLOWLIST", c.DefaultPublicTenant), ",")
 
 	// Platform hanya untuk satu root: konfigurasi lain ditolak (AGENTS.md One-Polda-only rule).
@@ -50,6 +55,16 @@ func Load() (Config, error) {
 	}
 	if c.DatabaseURL == "" {
 		return c, fmt.Errorf("DATABASE_URL is required")
+	}
+	if c.OIDCIssuer != "" {
+		if c.OIDCClientID == "" || c.OIDCRedirectURL == "" {
+			return c, fmt.Errorf("OIDC_CLIENT_ID and OIDC_REDIRECT_URL are required when OIDC_ISSUER_URL is set")
+		}
+		for _, u := range []string{c.OIDCIssuer, c.OIDCRedirectURL} {
+			if !strings.HasPrefix(u, "https://") && !(c.AppEnv == "development" && (strings.HasPrefix(u, "http://localhost") || strings.HasPrefix(u, "http://127.0.0.1"))) {
+				return c, fmt.Errorf("OIDC URLs must be https (http only for localhost in development)")
+			}
+		}
 	}
 	key, err := base64.StdEncoding.DecodeString(os.Getenv("DATA_ENCRYPTION_KEY"))
 	if err != nil || len(key) != 32 {

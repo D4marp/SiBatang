@@ -98,7 +98,17 @@ paths:
     get:
       tags: [staff]
       operationId: startStaffLogin
-      responses: {'501': {$ref: '#/components/responses/Problem'}}
+      description: Memulai OIDC Authorization Code + PKCE (302 ke IdP). 501 bila OIDC belum dikonfigurasi.
+      responses: {'302': {description: Redirect ke IdP; cookie sib_oidc (terenkripsi, 10 menit)}, '501': {$ref: '#/components/responses/Problem'}}
+  /auth/staff/callback:
+    get:
+      tags: [staff]
+      operationId: finishStaffLogin
+      parameters:
+        - {in: query, name: code, schema: {type: string}}
+        - {in: query, name: state, schema: {type: string}}
+      description: Validasi state/nonce/PKCE/id_token; pengguna harus terdaftar (tanpa auto-provision); MFA (amr=mfa) wajib untuk peran privilese. 302 ke halaman tujuan, atau /masuk?error=state|idp|mfa|not_registered|server.
+      responses: {'302': {description: Sesi dibuat (cookie sib_session HttpOnly SameSite=Lax) atau redirect ke /masuk?error=...}}
   /staff/counters/{id}/queue:
     get:
       tags: [staff]
@@ -406,7 +416,7 @@ components:
         status: {type: integer}
         code:
           type: string
-          enum: [VALIDATION_ERROR, AUTH_REQUIRED, SCOPE_DENIED, NOT_FOUND, SLOT_FULL, STATE_CONFLICT, IDEMPOTENCY_KEY_REUSED, ZONE_LEASED_BY_OTHER, STALE_FENCING_TOKEN, BOOKING_EXPIRED, SERVICE_POLICY_NOT_MET, RATE_LIMITED, NOT_CONFIGURED, TEMPORARILY_UNAVAILABLE, INTERNAL_ERROR]
+          enum: [VALIDATION_ERROR, AUTH_REQUIRED, SCOPE_DENIED, NOT_FOUND, SLOT_FULL, STATE_CONFLICT, IDEMPOTENCY_KEY_REUSED, ZONE_LEASED_BY_OTHER, STALE_FENCING_TOKEN, BOOKING_EXPIRED, SERVICE_POLICY_NOT_MET, MFA_REQUIRED, RATE_LIMITED, NOT_CONFIGURED, TEMPORARILY_UNAVAILABLE, INTERNAL_ERROR]
         detail: {type: string}
         request_id: {type: string}
     NamePolicy: {type: string, enum: [NUMBER_ONLY, PREFERRED_NAME_IF_CONSENT, FULL_NAME_IF_APPROVED], default: NUMBER_ONLY}

@@ -40,7 +40,7 @@ sibctl dev-session --subject <oidc-sub>      # hanya APP_ENV non-produksi; produ
 
 | Gate | Status |
 |---|---|
-| `go test ./... -race` | **Hijau** (PostgreSQL 18; 17 tes layanan + 2 tes HTTP + tes domain) |
+| `go test ./... -race` | **Hijau** (PostgreSQL 18; tes layanan, HTTP, domain, OIDC) |
 | `go vet`, `gofmt` | Hijau |
 | OpenAPI valid | **Hijau** (`redocly lint`, `backend/api/openapi.yaml`) |
 | Web `lint`, `typecheck`, `test`, `build` | **Hijau** (tipe TS dihasilkan dari OpenAPI) |
@@ -64,7 +64,7 @@ sibctl dev-session --subject <oidc-sub>      # hanya APP_ENV non-produksi; produ
 
 ## Batasan & keputusan implementasi (harus dibaca sebelum go-live)
 
-1. **Login staf OIDC belum diimplementasikan** — `GET /auth/staff/login` mengembalikan `501 NOT_CONFIGURED`. Sesi, cookie HttpOnly, CSRF, dan pencabutan sudah ada; callback OIDC (code+PKCE, nonce, mapping `sub`) menunggu IdP resmi (OPEN-08). Tidak ada password di sistem. Mode **operator desktop** bergantung pada ini dan masih berupa layar placeholder.
+1. **Login staf OIDC sudah ada** (code+PKCE, verifikasi id_token, MFA wajib untuk peran privilese, tanpa auto-provision; lihat `docs/OIDC.md`), diuji dengan IdP palsu — belum dengan IdP institusi nyata (OPEN-08). Tanpa konfigurasi `OIDC_*` login mengembalikan 501. Mode **operator desktop** masih placeholder karena butuh alur native OIDC.
 2. **Seed produksi** hanya org/tenant/site/layanan **DRAFT** (nomenklatur "Polres Batang" vs "Polresta Batang" belum diverifikasi — OPEN-01). Tenant `SIBATANG_BATANG` baru `PUBLISHED` setelah checklist kesiapan (site+layanan terbit, zona audio, loket, kiosk/display/announcer aktif, slot terbuka) dan persetujuan `POLDA_ORG_ADMIN`.
 3. **Kebijakan antrean per loket** (`auto_announce_on_call`, `auto_advance_on_ready`, recall) disimpan sebagai kolom `counters`, bukan tabel `queue_counter_policies` terpisah, dan endpoint-nya `PATCH /staff/counters/{id}/queue-policy` (bukan `/staff/sites/{id}/queue-policy`). OpenAPI mengikuti implementasi.
 4. **SSE** memakai polling 1 dtk atas `queue_events`/`queue_announcements` (durable, `Last-Event-ID`, revalidasi otorisasi tiap siklus). `LISTEN/NOTIFY` sebagai pemicu belum ada; polling cukup untuk satu instance pilot.
